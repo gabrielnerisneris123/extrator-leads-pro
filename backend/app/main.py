@@ -10,13 +10,16 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.api.routes import auth, leads, scraping, export, dashboard, github
 
-# Force UTF-8 output to avoid Windows cp1252 emoji errors
-if sys.stdout.encoding != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if sys.stderr.encoding != "utf-8":
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+# UTF-8 output (Windows compatibility — ignorado em Linux/Vercel)
+try:
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
-# Configure loguru — no emojis for Windows compatibility
+# Configure loguru
 logger.remove()
 logger.add(
     sys.stdout,
@@ -25,13 +28,17 @@ logger.add(
     level="DEBUG" if settings.DEBUG else "INFO",
 )
 
-os.makedirs("logs", exist_ok=True)
-logger.add(
-    "logs/app.log",
-    rotation="10 MB",
-    retention="7 days",
-    level="INFO",
-)
+# Log em arquivo (apenas quando filesystem disponível — local dev)
+try:
+    os.makedirs("logs", exist_ok=True)
+    logger.add(
+        "logs/app.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="INFO",
+    )
+except Exception:
+    pass  # Vercel tem filesystem somente leitura
 
 
 @asynccontextmanager
@@ -39,7 +46,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     await init_db()
     await create_default_admin()
-    logger.info("Application ready! Docs: http://localhost:8000/docs")
+    logger.info("Application ready!")
     yield
     logger.info("Shutting down...")
 
@@ -80,6 +87,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # qualquer deploy Vercel
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
