@@ -44,9 +44,13 @@ except Exception:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    await init_db()
-    await create_default_admin()
-    logger.info("Application ready!")
+    try:
+        await init_db()
+        await create_default_admin()
+        logger.info("Application ready!")
+    except Exception as e:
+        # Não crasha o app se o banco falhar no startup (ex: Neon sleeping)
+        logger.error(f"Startup DB error (continuing): {e}")
     yield
     logger.info("Shutting down...")
 
