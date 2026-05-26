@@ -18,7 +18,9 @@ passlib[bcrypt]==1.7.4
 
 # Pydantic
 pydantic==2.11.5
+pydantic[email]==2.11.5
 pydantic-settings==2.9.1
+email-validator==2.2.0
 
 # Scraping — Google Maps via SerpAPI + enriquecimento de websites
 httpx==0.28.1
