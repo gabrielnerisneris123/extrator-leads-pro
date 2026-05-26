@@ -225,8 +225,8 @@ function FormBuscaRapida({
   loading: boolean;
 }) {
   const [exIdx, setExIdx] = useState(0);
-  const [onlyPhone, setOnlyPhone] = useState(false);
-  const [onlyEmail, setOnlyEmail] = useState(false);
+  const [onlyPhone, setOnlyPhone] = useState(true);  // Ativado por padrão
+  const [onlyEmail, setOnlyEmail] = useState(true);  // Ativado por padrão
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<FormRapida>({
     resolver: zodResolver(schemaRapida),
@@ -234,7 +234,12 @@ function FormBuscaRapida({
   });
 
   const maxVal = Number(watch("max_results")) || 20;
-  const credits = Math.ceil(maxVal / 20);
+  // Com filtros ativos, precisamos buscar mais pages para atingir a meta
+  // Estimativa: ~30-50% dos leads têm email+telefone → ~2-4x mais créditos
+  const filtersActive = onlyPhone || onlyEmail;
+  const creditsMin = Math.ceil(maxVal / 20);
+  const creditsMax = Math.ceil(maxVal / 20) * (filtersActive ? 4 : 1);
+  const credits = creditsMin;
 
   useEffect(() => {
     const t = setInterval(() => setExIdx((i) => (i + 1) % EXEMPLOS_RAPIDOS.length), 3000);
@@ -265,7 +270,7 @@ function FormBuscaRapida({
       {/* Max results */}
       <div>
         <label className="text-xs font-medium text-slate-400 mb-2 block">
-          Máximo de resultados
+          Meta de leads válidos
         </label>
         <input
           {...register("max_results")}
@@ -273,12 +278,16 @@ function FormBuscaRapida({
           className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500/40"
         />
         <div className="flex items-center justify-between mt-1.5">
-          <p className="text-xs text-slate-600">Máximo 100 neste modo</p>
-          <CreditBadge credits={credits} />
+          <p className="text-xs text-slate-600">
+            {filtersActive
+              ? `~${creditsMin}–${creditsMax} créditos estimados`
+              : `~${creditsMin} crédito${creditsMin !== 1 ? "s" : ""}`}
+          </p>
+          <CreditBadge credits={creditsMin} />
         </div>
-        {credits > 5 && (
-          <p className="text-xs text-yellow-400/80 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 mt-1">
-            ⚠️ Use o <strong>Modo Volume</strong> para buscas grandes.
+        {filtersActive && (
+          <p className="text-xs text-blue-400/80 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2 mt-1">
+            💡 Buscará páginas até encontrar <strong>{maxVal} com email+telefone</strong>. Para quando atingir a meta.
           </p>
         )}
       </div>
@@ -340,8 +349,8 @@ function FormBuscaVolume({
   onSubmit: (query: string, max: number, phone: boolean, email: boolean) => void;
   loading: boolean;
 }) {
-  const [onlyPhone, setOnlyPhone] = useState(false);
-  const [onlyEmail, setOnlyEmail] = useState(false);
+  const [onlyPhone, setOnlyPhone] = useState(true);  // Ativado por padrão
+  const [onlyEmail, setOnlyEmail] = useState(true);  // Ativado por padrão
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<FormVolume>({
     resolver: zodResolver(schemaVolume),
@@ -604,7 +613,7 @@ export default function ScrapingPage() {
                     <div>
                       <p className="text-xs text-slate-300 font-medium">🎯 Busca Rápida</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        1 campo · até 100 resultados · <span className="text-green-400">1–5 créditos</span>
+                        Para quando tiver <span className="text-green-400">N leads válidos</span> com email+telefone
                       </p>
                     </div>
                   </motion.div>

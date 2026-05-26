@@ -1,8 +1,15 @@
 """
 Scraping service - gerencia jobs e orquestra scrapers.
+
+Lógica principal:
+  - Busca página por página no Google Maps (1 crédito = 20 resultados)
+  - Enriquece cada página (visita sites, extrai email)
+  - Para assim que tiver `max_results` leads VÁLIDOS (com telefone/email se filtros ativos)
+  - Não gasta mais créditos do que o necessário
 """
 import asyncio
 import traceback
+import httpx
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +20,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.config import settings
 from loguru import logger
 
+RESULTS_PER_PAGE = 20  # SerpAPI retorna 20 por crédito
 
 # Rastreia jobs: job_id -> True (rodando) / False (cancelado)
 running_jobs: dict = {}
@@ -24,7 +32,7 @@ class ScrapingService:
     async def create_job(
         db: AsyncSession,
         query: str,
-        max_results: int = 100,
+        max_results: int = 20,
         user_id: Optional[str] = None,
         only_with_phone: bool = False,
         only_with_email: bool = False,
@@ -59,16 +67,14 @@ class ScrapingService:
                 logger.error(f"Job {job_id} nao encontrado")
                 return
 
-            # Guarda started_at como variavel local para nao depender do ORM
             started_at = datetime.utcnow()
-
             job.status = JobStatus.executando
             job.started_at = started_at
             job.logs = f"[{started_at.strftime('%H:%M:%S')}] Job iniciado\n"
             await db.commit()
 
             running_jobs[str(job_id)] = True
-            logger.info(f"Iniciando scraping: '{job.query}' (max: {job.max_results})")
+            logger.info(f"Iniciando scraping: '{job.query}' (meta: {job.max_results} válidos)")
 
             try:
                 await ScrapingService._execute_scraping(db, job, started_at)
@@ -80,7 +86,6 @@ class ScrapingService:
 
             except Exception as e:
                 full_tb = traceback.format_exc()
-                # Gera mensagem legivel mesmo para excecoes sem mensagem
                 err_msg = f"{type(e).__name__}"
                 if str(e):
                     err_msg += f": {str(e)}"
@@ -102,33 +107,38 @@ class ScrapingService:
 
     @staticmethod
     async def _execute_scraping(db: AsyncSession, job: ScrapingJob, started_at: datetime):
-        """Executa o scraping em si: Maps + enriquecimento de sites."""
+        """
+        Busca página por página até atingir `max_results` leads VÁLIDOS.
+
+        Fluxo por página:
+          1. Busca 20 resultados do Google Maps (1 crédito)
+          2. Filtra duplicatas (place_ids já no banco)
+          3. Enriquece os novos (visita sites para extrair email — concorrente)
+          4. Salva apenas os que passam nos filtros (telefone/email)
+          5. Para quando tiver leads válidos suficientes ou acabar as páginas
+        """
         job_id = str(job.id)
 
-        # Filtros de qualidade configurados ao criar o job
         cfg = job.config or {}
         only_with_phone = cfg.get("only_with_phone", False)
         only_with_email = cfg.get("only_with_email", False)
+        target_valid = job.max_results  # Meta: leads VÁLIDOS (não total buscado)
 
         def log(msg: str):
             ts = datetime.utcnow().strftime('%H:%M:%S')
             job.logs = (job.logs or "") + f"[{ts}] {msg}\n"
 
+        # ── Monta descrição dos filtros ───────────────────────────────────────
         filtros_ativos = []
         if only_with_phone:
             filtros_ativos.append("telefone")
         if only_with_email:
-            filtros_ativos.append("email")
+            filtros_ativos.append("e-mail")
+        filtros_str = f" | Requer: {' + '.join(filtros_ativos)}" if filtros_ativos else ""
 
-        log(f"Buscando: '{job.query}' (max: {job.max_results})"
-            + (f" | Filtro: apenas com {' + '.join(filtros_ativos)}" if filtros_ativos else ""))
-        await db.commit()
+        log(f"Meta: {target_valid} leads válidos{filtros_str}")
 
-        # ─── FASE 1: Google Maps via SerpAPI ─────────────────────────────
-        log("Fase 1: Coletando Google Maps via SerpAPI...")
-        await db.commit()
-
-        # Carrega place_ids já no banco para evitar créditos desnecessários
+        # ── Carrega place_ids já no banco (dedup) ─────────────────────────────
         from app.models.lead import Lead as LeadModel
         from sqlalchemy import and_ as sql_and
         known_result = await db.execute(
@@ -136,7 +146,6 @@ class ScrapingService:
         )
         known_place_ids = {row[0] for row in known_result.all()}
 
-        # Leads já com email: não precisam de website visit
         enriched_result = await db.execute(
             select(LeadModel.place_id).where(
                 sql_and(LeadModel.place_id.isnot(None), LeadModel.has_email == True)
@@ -145,144 +154,186 @@ class ScrapingService:
         enriched_place_ids = {row[0] for row in enriched_result.all()}
 
         if known_place_ids:
-            log(f"Dedup: {len(known_place_ids)} leads ja no banco ({len(enriched_place_ids)} com email)")
+            log(f"Dedup: {len(known_place_ids)} leads já no banco ({len(enriched_place_ids)} com e-mail)")
 
-        maps_results: List[Dict[str, Any]] = []
+        await db.commit()
 
-        async def maps_progress(scraped: int, total: int, current_name: str = ""):
-            """Callback de progresso — roda no mesmo event loop."""
-            job.progress = int((scraped / max(total, 1)) * 50)
-            job.total_found = total
-            job.total_scraped = scraped
-            if scraped % 5 == 0 or scraped == total:
-                try:
-                    await db.commit()
-                except Exception:
-                    pass
-
+        # ── Setup scrapers ────────────────────────────────────────────────────
         from app.scraper.serp_maps import SerpApiMapsScraper
-        scraper = SerpApiMapsScraper()
-        maps_results = await scraper.scrape_query(
-            query=job.query,
-            max_results=job.max_results,
-            progress_callback=maps_progress,
-            known_place_ids=known_place_ids,
-        )
-
-        job.total_found = len(maps_results)
-        log(f"Fase 1 concluida: {len(maps_results)} empresas encontradas")
-        await db.commit()
-
-        if not maps_results:
-            job.status = JobStatus.concluido
-            job.progress = 100
-            job.finished_at = datetime.utcnow()
-            log("Nenhum resultado encontrado. Tente outra busca.")
-            await db.commit()
-            return
-
-        job.progress = 50
-        await db.commit()
-
-        # ─── FASE 2: Enriquecimento de websites (streaming — sem espera de lote) ──
-        log("Fase 2: Visitando websites para extrair emails...")
-        await db.commit()
-
         from app.scraper.website_scraper import WebsiteScraper
+        from app.scraper.utils import parse_query_location
         from app.core.config import settings as _cfg
 
+        scraper = SerpApiMapsScraper()
         website_scraper = WebsiteScraper(timeout=_cfg.SCRAPER_WEBSITE_TIMEOUT)
         semaphore = asyncio.Semaphore(_cfg.SCRAPER_ENRICH_CONCURRENCY)
-
-        total_leads = 0
-        total_emails = 0
-        done_count = 0
+        location_data = parse_query_location(job.query)
 
         async def _enrich_one(lead_data: dict) -> dict:
-            """Enriquece um lead; o semáforo controla quantos rodam ao mesmo tempo."""
-            # Pula website visit se o lead já tem email no banco
+            """Enriquece um lead visitando o website; semáforo limita simultâneos."""
             if lead_data.get("place_id") in enriched_place_ids:
-                return lead_data
+                return lead_data  # Já tem email no banco — pula
             if not lead_data.get("website"):
-                return lead_data
+                return lead_data  # Sem site — nada a extrair
             async with semaphore:
                 try:
                     enrichment = await website_scraper.enrich_lead(lead_data["website"])
-                    for key, value in enrichment.items():
-                        if value and not lead_data.get(key):
-                            lead_data[key] = value
+                    for k, v in enrichment.items():
+                        if v and not lead_data.get(k):
+                            lead_data[k] = v
                 except Exception as e:
                     logger.debug(f"Enriquecimento '{lead_data.get('nome', '?')}': {type(e).__name__}")
             return lead_data
 
-        # Dispara TODOS de uma vez — o semáforo limita os simultâneos.
-        # Assim que um site responde, o próximo começa imediatamente (sem
-        # esperar os lentos do mesmo lote).
-        tasks = [asyncio.create_task(_enrich_one(ld)) for ld in maps_results]
+        # ── Loop principal: página por página ─────────────────────────────────
+        valid_count = 0      # Leads que passaram nos filtros e foram salvos
+        page_start = 0       # Offset da página atual no SerpAPI
+        credits_used = 0     # Créditos SerpAPI gastos
+        total_discarded = 0  # Leads descartados por não ter telefone/email
 
-        for fut in asyncio.as_completed(tasks):
-            # Checa cancelamento antes de processar cada resultado
-            if running_jobs.get(job_id) is False:
-                for t in tasks:
-                    t.cancel()
-                log("Job cancelado pelo usuario")
-                break
+        async with httpx.AsyncClient(timeout=30.0) as maps_client:
 
-            lead_data = await fut
-            done_count += 1
-            nome = lead_data.get("nome", "?")
+            while valid_count < target_valid:
 
-            # ── Filtros de qualidade ───────────────────────────────────────
-            if only_with_phone and not lead_data.get("telefone"):
-                logger.debug(f"Descartado (sem telefone): {nome}")
-            elif only_with_email and not lead_data.get("email"):
-                logger.debug(f"Descartado (sem email): {nome}")
-            else:
-                if lead_data.get("email"):
-                    total_emails += 1
-                    log(f"Email: {lead_data['email']} ({nome})")
+                # Checa cancelamento
+                if running_jobs.get(job_id) is False:
+                    log("Cancelado pelo usuário")
+                    break
+
+                # ── FASE 1: Busca uma página no Google Maps (1 crédito) ────────
+                log(f"Buscando página {credits_used + 1} no Google Maps...")
+                await db.commit()
 
                 try:
-                    await LeadService.upsert_lead(db, lead_data, job_id=job_id)
-                    total_leads += 1
+                    page_results, has_more = await scraper._fetch_page(
+                        maps_client, job.query, page_start, location_data
+                    )
                 except Exception as e:
-                    logger.warning(f"Erro ao salvar '{nome}': {e}")
+                    log(f"Erro na API SerpAPI: {e}")
+                    break
+
+                credits_used += 1
+
+                if not page_results:
+                    log(f"Sem mais resultados no Google Maps ({credits_used} crédito(s) usados)")
+                    break
+
+                # Remove duplicatas (já no banco)
+                new_results = [
+                    r for r in page_results
+                    if r.get("place_id") not in known_place_ids
+                ]
+                dup_count = len(page_results) - len(new_results)
+
+                log(
+                    f"Página {credits_used}: {len(new_results)} novos"
+                    + (f" | {dup_count} já no banco" if dup_count else "")
+                )
+                await db.commit()
+
+                if len(new_results) == 0:
+                    # Página 100% duplicada — páginas seguintes também serão
+                    log(f"Página 100% duplicada — interrompendo paginação")
+                    break
+
+                # ── FASE 2: Enriquece esta página de forma concorrente ─────────
+                tasks = [asyncio.create_task(_enrich_one(r)) for r in new_results]
+
+                for fut in asyncio.as_completed(tasks):
+
+                    if running_jobs.get(job_id) is False:
+                        for t in tasks:
+                            t.cancel()
+                        break
+
+                    lead_data = await fut
+                    nome = lead_data.get("nome", "?")
+
+                    # ── Filtros de qualidade ────────────────────────────────────
+                    passes = True
+                    if only_with_phone and not lead_data.get("telefone"):
+                        passes = False
+                    if only_with_email and not lead_data.get("email"):
+                        passes = False
+
+                    if not passes:
+                        total_discarded += 1
+                        continue
+
+                    # ── Lead válido: salva no banco ────────────────────────────
+                    if lead_data.get("email"):
+                        log(f"✓ {nome} | {lead_data['email']}")
+                    else:
+                        log(f"✓ {nome}")
+
                     try:
-                        await db.rollback()
-                    except Exception:
-                        pass
+                        await LeadService.upsert_lead(db, lead_data, job_id=job_id)
+                        valid_count += 1
+                        # Adiciona ao dedup local para não reprocessar nesta sessão
+                        if lead_data.get("place_id"):
+                            known_place_ids.add(lead_data["place_id"])
+                    except Exception as e:
+                        logger.warning(f"Erro ao salvar '{nome}': {e}")
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
 
-            # Progresso: 50% → 100% conforme leads chegam
-            job.progress = 50 + int(done_count / len(maps_results) * 50)
-            job.total_scraped = total_leads
-            job.total_emails = total_emails
+                    # Atualiza progresso (% baseado na meta)
+                    job.progress = min(95, int(valid_count / target_valid * 100))
+                    job.total_scraped = valid_count
+                    job.total_found = page_start + len(page_results)
 
-            # Commit a cada 5 finalizados para não sobrecarregar o DB
-            if done_count % 5 == 0 or done_count == len(maps_results):
-                try:
-                    await db.commit()
-                except Exception as e:
-                    logger.warning(f"Erro ao commitar: {e}")
+                    # ── Meta atingida: para imediatamente ─────────────────────
+                    if valid_count >= target_valid:
+                        for t in tasks:
+                            t.cancel()
+                        break
 
-        # ─── FINALIZACAO ──────────────────────────────────────────────────
+                await db.commit()
+
+                # Saiu do loop de leads desta página
+                if valid_count >= target_valid:
+                    log(
+                        f"Meta atingida! {valid_count} leads válidos | "
+                        f"{credits_used} crédito(s) | "
+                        f"{total_discarded} sem telefone/e-mail descartados"
+                    )
+                    break
+
+                if not has_more:
+                    log(f"Sem mais páginas. Total: {valid_count} leads válidos | {credits_used} crédito(s)")
+                    break
+
+                page_start += RESULTS_PER_PAGE
+                await asyncio.sleep(0.3)  # Respeita rate limit
+
+        # ── FINALIZAÇÃO ───────────────────────────────────────────────────────
         job.status = JobStatus.concluido
         job.progress = 100
-        job.total_scraped = total_leads
-        job.total_emails = total_emails
+        job.total_scraped = valid_count
         job.finished_at = datetime.utcnow()
 
         duration = int((job.finished_at - started_at).total_seconds())
-        log(f"Concluido! {total_leads} leads | {total_emails} emails | {duration}s")
+        log(
+            f"Concluído! {valid_count}/{target_valid} leads válidos | "
+            f"{credits_used} crédito(s) | "
+            f"{total_discarded} descartados | "
+            f"{duration}s"
+        )
         await db.commit()
 
-        logger.info(f"Job {job_id} OK: {total_leads} leads, {total_emails} emails, {duration}s")
+        logger.info(
+            f"Job {job_id}: {valid_count} leads válidos, "
+            f"{credits_used} crédito(s), {total_discarded} descartados, {duration}s"
+        )
 
     @staticmethod
     async def cancel_job(db: AsyncSession, job_id: str) -> bool:
         job = await ScrapingService._get_job(db, job_id)
         if not job:
             return False
-        running_jobs[str(job_id)] = False  # Sinaliza para parar
+        running_jobs[str(job_id)] = False
         job.status = JobStatus.cancelado
         job.finished_at = datetime.utcnow()
         await db.commit()
