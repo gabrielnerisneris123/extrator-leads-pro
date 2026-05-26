@@ -1,0 +1,24 @@
+
+> extrator-leads-frontend@1.0.0 dev
+> next dev
+
+  ▲ Next.js 14.2.3
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 2.5s
+ ○ Compiling / ...
+ ✓ Compiled / in 2.2s (576 modules)
+ GET / 200 in 2555ms
+ ✓ Compiled in 396ms (294 modules)
+ GET / 200 in 50ms
+ ○ Compiling /login ...
+ ✓ Compiled /login in 3s (2670 modules)
+ ○ Compiling /leads ...
+ ✓ Compiled /leads in 556ms (2718 modules)
+ ○ Compiling /scraping ...
+ ✓ Compiled /scraping in 950ms (2740 modules)
+ GET /leads 200 in 167ms
+Deseja finalizar o arquivo em lotes (S/N)? 
+[?25h

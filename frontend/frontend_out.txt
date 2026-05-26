@@ -1,0 +1,36 @@
+
+> extrator-leads-frontend@1.0.0 dev
+> next dev
+
+  ▲ Next.js 14.2.3
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 3.2s
+ ○ Compiling / ...
+ ✓ Compiled / in 3.4s (576 modules)
+ GET / 200 in 3986ms
+ ✓ Compiled in 506ms (294 modules)
+ ○ Compiling /leads ...
+ ✓ Compiled /leads in 3.5s (1607 modules)
+ GET /leads 200 in 4001ms
+ ✓ Compiled /login in 491ms (1650 modules)
+ ○ Compiling /dashboard ...
+ ✓ Compiled /dashboard in 1349ms (2689 modules)
+ ✓ Compiled /leads in 160ms (1403 modules)
+ ✓ Compiled /scraping in 493ms (2734 modules)
+ ✓ Compiled in 909ms (2200 modules)
+ ✓ Compiled in 1107ms (2214 modules)
+ ✓ Compiled in 686ms (2214 modules)
+ ✓ Compiled in 732ms (2214 modules)
+ ✓ Compiled in 595ms (2214 modules)
+ ✓ Compiled in 1338ms (2216 modules)
+ ✓ Compiled in 851ms (2216 modules)
+ ✓ Compiled in 751ms (2216 modules)
+ ✓ Compiled in 853ms (2216 modules)
+ GET /scraping 200 in 173ms
+ GET /scraping 200 in 32ms
+ ○ Compiling /dashboard ...
+ ✓ Compiled /dashboard in 1091ms (1415 modules)
+ GET /dashboard 200 in 188ms

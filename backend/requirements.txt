@@ -1,0 +1,30 @@
+# Web Framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-multipart==0.0.20
+
+# Database (SQLite para dev local)
+sqlalchemy==2.0.41
+aiosqlite==0.20.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Pydantic
+pydantic==2.11.5
+pydantic-settings==2.9.1
+
+# Scraping — Google Maps via SerpAPI + enriquecimento de websites
+httpx==0.28.1
+beautifulsoup4==4.13.4
+lxml==5.4.0
+
+# Export (sem pandas — usamos openpyxl direto)
+openpyxl==3.1.5
+
+# Utils
+python-dotenv==1.1.0
+aiofiles==24.1.0
+tenacity==9.1.2
+loguru==0.7.3
