@@ -9,8 +9,7 @@ mangum==0.17.0
 # Database
 sqlalchemy==2.0.41
 aiosqlite==0.20.0       # SQLite (dev local)
-asyncpg==0.30.0         # PostgreSQL (Vercel/produção)
-psycopg2-binary==2.9.10 # PostgreSQL sync (fallback)
+asyncpg==0.30.0         # PostgreSQL async (Vercel/produção)
 
 # Auth
 python-jose[cryptography]==3.3.0

@@ -1,39 +1,53 @@
 """
 Vercel entry point para o backend FastAPI.
+handler deve estar no top-level para o runtime do Vercel detectar.
 """
 import sys
 import os
 import traceback
+import asyncio
 
 # Adiciona o diretório backend/ ao path para importar app.*
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_import_error = None
-_import_tb = None
+from mangum import Mangum  # noqa — precisa estar antes de tudo
+
+_import_error: str | None = None
 
 try:
-    from app.main import app as _real_app
-    from mangum import Mangum
-    handler = Mangum(_real_app, lifespan="auto")
+    from app.main import app
 
-except Exception as _e:
-    _import_error = str(_e)
-    _import_tb = traceback.format_exc()
+    # Inicializa o banco de dados de forma síncrona no cold start
+    # (lifespan="off" evita conflitos com o event loop do mangum)
+    _loop = asyncio.new_event_loop()
+    try:
+        from app.core.database import init_db
+        from app.main import create_default_admin
+        _loop.run_until_complete(init_db())
+        _loop.run_until_complete(create_default_admin())
+        print("[startup] DB initialized", flush=True)
+    except Exception as _db_err:
+        print(f"[startup] DB init error (non-fatal): {_db_err}", flush=True)
+    finally:
+        _loop.close()
+        del _loop
 
-    # Se a importação falhar, cria um app mínimo que mostra o erro
+except Exception:
+    _import_error = traceback.format_exc()
+    print(f"[startup] IMPORT ERROR:\n{_import_error}", flush=True)
+
     from fastapi import FastAPI
-    from mangum import Mangum
+    _err_detail = _import_error
 
-    _err_app = FastAPI()
+    app = FastAPI()
 
-    @_err_app.get("/{path:path}")
-    async def _error(path: str = ""):
+    @app.get("/{path:path}")
+    async def _error_route(path: str = ""):
         return {
             "status": "import_error",
-            "error": _import_error,
-            "traceback": _import_tb,
-            "python": sys.version,
-            "sys_path": sys.path[:5],
+            "error": _err_detail,
+            "python_version": sys.version,
         }
 
-    handler = Mangum(_err_app, lifespan="off")
+# handler SEMPRE no top-level — Vercel exige isso
+handler = Mangum(app, lifespan="off")

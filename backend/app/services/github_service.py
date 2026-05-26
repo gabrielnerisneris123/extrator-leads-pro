@@ -41,16 +41,20 @@ def _default_config() -> Dict[str, Any]:
 
 
 def load_config() -> Dict[str, Any]:
-    if CONFIG_FILE.exists():
-        try:
+    try:
+        if CONFIG_FILE.exists():
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    except Exception:
+        pass
     return _default_config()
 
 
 def save_config(cfg: Dict[str, Any]) -> None:
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        # Vercel tem filesystem somente leitura — ignora silenciosamente
+        logger.warning("Não foi possível salvar github_config.json (filesystem somente leitura)")
 
 
 # ── GitHub API helpers ────────────────────────────────────────────────────────
